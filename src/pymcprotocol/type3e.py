@@ -108,7 +108,7 @@ class Type3E:
         """
         self._debug = debug
 
-    def connect(self, ip, port):
+    def connect(self, ip, port, enable_keep_alive=False, keep_idle=60, keep_intvl=10, keep_cnt=5):
         """Connect to PLC
 
         Args:
@@ -121,6 +121,11 @@ class Type3E:
         self._port = port
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.settimeout(self.soc_timeout)
+        if enable_keep_alive:
+            self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, keep_idle)
+            self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, keep_intvl)
+            self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, keep_cnt)
         self._sock.connect((ip, port))
         self._is_connected = True
 
