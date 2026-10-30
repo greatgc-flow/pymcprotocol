@@ -53,7 +53,7 @@ class CommTypeError(Exception):
 
     """
     def __init__(self):
-        pass
+        super().__init__(self.__str__())
 
     def __str__(self):
         return "communication type must be \"binary\" or \"ascii\""
@@ -63,7 +63,7 @@ class PLCTypeError(Exception):
 
     """
     def __init__(self):
-        pass
+        super().__init__(self.__str__())
 
     def __str__(self):
         return "plctype must be \"Q\", \"L\", \"QnA\" \"iQ-L\" or \"iQ-R\""
@@ -97,6 +97,7 @@ class Type3E:
     soc_timeout     = 2 # 2 sec
     _is_connected   = False
     _SOCKBUFSIZE    = 4096
+    _MAX_FRAME_SIZE = 65536
     _wordsize       = 2 #how many byte is required to describe word value 
                         #binary: 2, ascii:4.
     _debug          = False
@@ -156,8 +157,59 @@ class Type3E:
         Returns:
             recv_data
         """
-        recv_data = self._sock.recv(self._SOCKBUFSIZE)
-        return recv_data
+        header_size = self._get_answerstatus_index()
+        min_frame_size = header_size + self._wordsize
+        timeout = getattr(self._sock, "gettimeout", lambda: None)()
+        if timeout is None:
+            timeout = self.soc_timeout
+        deadline = (time.monotonic() + timeout) if (timeout is not None and timeout > 0) else None
+
+        recv_data = bytearray()
+        while len(recv_data) < header_size:
+            if deadline is not None and time.monotonic() > deadline:
+                raise socket.timeout("timed out waiting for MC protocol response header")
+            chunk = self._sock.recv(self._SOCKBUFSIZE)
+            if not chunk:
+                raise mcprotocolerror.MCProtocolResponseError(
+                    "Peer closed connection before response header was complete "
+                    "(expected at least {} bytes, got {} bytes)".format(header_size, len(recv_data))
+                )
+            recv_data.extend(chunk)
+
+        length_slice = bytes(recv_data[header_size - self._wordsize : header_size])
+        try:
+            data_length = self._decode_value(length_slice, mode="short")
+        except ValueError:
+            raise mcprotocolerror.MCProtocolResponseError("Invalid response length field in header")
+
+        total_size = header_size + data_length
+        if total_size < min_frame_size:
+            raise mcprotocolerror.MCProtocolResponseError(
+                "Response length field ({}) is shorter than end code size ({})".format(
+                    data_length, self._wordsize
+                )
+            )
+        if total_size > self._MAX_FRAME_SIZE:
+            raise mcprotocolerror.MCProtocolResponseError(
+                "Claimed frame size ({}) exceeds maximum allowed ({})".format(
+                    total_size, self._MAX_FRAME_SIZE
+                )
+            )
+
+        while len(recv_data) < total_size:
+            if deadline is not None and time.monotonic() > deadline:
+                raise socket.timeout("timed out waiting for MC protocol response body")
+            remaining = total_size - len(recv_data)
+            chunk = self._sock.recv(min(self._SOCKBUFSIZE, remaining))
+            if not chunk:
+                raise mcprotocolerror.MCProtocolResponseError(
+                    "Peer closed connection mid-frame (expected {} bytes, got {} bytes)".format(
+                        total_size, len(recv_data)
+                    )
+                )
+            recv_data.extend(chunk)
+
+        return bytes(recv_data)
 
     def _set_plctype(self, plctype):
         """Check PLC type. If plctype is vaild, set self.commtype.
@@ -230,38 +282,38 @@ class Type3E:
                                     Socket time out is set timer_sec + 1 sec.
 
         """
-        if commtype:
+        if commtype is not None:
             self._set_commtype(commtype)
-        if network:
+        if network is not None:
             try:
                 network.to_bytes(1, "little")
                 self.network = network
             except:
                 raise ValueError("network must be 0 <= network <= 255")
-        if pc:
+        if pc is not None:
             try:
                 pc.to_bytes(1, "little")
                 self.pc = pc
             except:
                 raise ValueError("pc must be 0 <= pc <= 255") 
-        if dest_moduleio:
+        if dest_moduleio is not None:
             try:
                 dest_moduleio.to_bytes(2, "little")
                 self.dest_moduleio = dest_moduleio
             except:
                 raise ValueError("dest_moduleio must be 0 <= dest_moduleio <= 65535") 
-        if dest_modulesta:
+        if dest_modulesta is not None:
             try:
                 dest_modulesta.to_bytes(1, "little")
                 self.dest_modulesta = dest_modulesta
             except:
                 raise ValueError("dest_modulesta must be 0 <= dest_modulesta <= 255") 
-        if timer_sec:
+        if timer_sec is not None:
             try:
                 timer_250msec = 4 * timer_sec
                 timer_250msec.to_bytes(2, "little")
                 self.timer = timer_250msec
-                self.soc_timeout = timer_sec + 1
+                self.soc_timeout = max(1, timer_sec + 1)
                 if self._is_connected:
                     self._sock.settimeout(self.soc_timeout)
             except:
@@ -671,6 +723,15 @@ class Type3E:
 
         word_size = len(word_devices)
         dword_size = len(dword_devices)
+        total_points = word_size + dword_size
+        if total_points == 0:
+            raise ValueError("Read device points must be at least 1")
+        if self.plctype in (const.Q_SERIES, const.L_SERIES):
+            if total_points > 192:
+                raise ValueError("randomread points must be <= 192 for Q/L series")
+        elif self.plctype == const.iQR_SERIES:
+            if total_points > 96:
+                raise ValueError("randomread points must be <= 96 for iQ-R series")
         
         request_data = bytes()
         request_data += self._make_commanddata(command, subcommand)
@@ -718,6 +779,15 @@ class Type3E:
             
         word_size = len(word_devices)
         dword_size = len(dword_devices)
+        if word_size + dword_size == 0:
+            raise ValueError("Write device points must be at least 1")
+        weighted_size = word_size * 12 + dword_size * 14
+        if self.plctype in (const.Q_SERIES, const.L_SERIES):
+            if weighted_size > 1920:
+                raise ValueError("randomwrite words*12 + dwords*14 must be <= 1920 for Q/L series")
+        elif self.plctype == const.iQR_SERIES:
+            if weighted_size > 960:
+                raise ValueError("randomwrite words*12 + dwords*14 must be <= 960 for iQ-R series")
 
         command = 0x1402
         if self.plctype == const.iQR_SERIES:
@@ -755,6 +825,14 @@ class Type3E:
         if len(bit_devices) != len(values):
             raise ValueError("bit_devices and values must be same length")
         write_size = len(values)
+        if write_size == 0:
+            raise ValueError("Write bit device points must be at least 1")
+        if self.plctype in (const.Q_SERIES, const.L_SERIES):
+            if write_size > 188:
+                raise ValueError("randomwrite_bitunits points must be <= 188 for Q/L series")
+        elif self.plctype == const.iQR_SERIES:
+            if write_size > 94:
+                raise ValueError("randomwrite_bitunits points must be <= 94 for iQ-R series")
         #check values
         for value in values:
             if not (value == 0 or value == 1): 
