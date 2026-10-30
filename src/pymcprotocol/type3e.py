@@ -29,12 +29,17 @@ def twos_comp(val, mode="short"):
         val = val - (1 << bit)        # compute negative value
     return val  
 
+_HEX_DEVICE_RE = re.compile(r"^(SB|SW|DX|DY|ZR|X|Y|B|W)((?:0[xX])?[0-9a-fA-F]+)$")
+
 def get_device_number(device):
     """Extract device number.
 
     Ex: "D1000" → "1000"
         "X0x1A" → "0x1A
     """
+    hex_match = _HEX_DEVICE_RE.match(device)
+    if hex_match is not None:
+        return hex_match.group(2)
     device_num = re.search(r"\d.*", device)
     if device_num is None:
         raise ValueError("Invalid device number, {}".format(device))
@@ -319,11 +324,15 @@ class Type3E:
         
         device_data = bytes()
 
-        devicetype = re.search(r"\D+", device)
-        if devicetype is None:
-            raise ValueError("Invalid device ")
+        hex_match = _HEX_DEVICE_RE.match(device)
+        if hex_match is not None:
+            devicetype = hex_match.group(1)
         else:
-            devicetype = devicetype.group(0)      
+            devicetype = re.search(r"\D+", device)
+            if devicetype is None:
+                raise ValueError("Invalid device ")
+            else:
+                devicetype = devicetype.group(0)      
 
         if self.commtype == const.COMMTYPE_BINARY:
             devicecode, devicebase = const.DeviceConstants.get_binary_devicecode(self.plctype, devicetype)
@@ -336,7 +345,11 @@ class Type3E:
                 device_data += devicecode.to_bytes(1, "little")
         else:
             devicecode, devicebase = const.DeviceConstants.get_ascii_devicecode(self.plctype, devicetype)
-            devicenum = str(int(get_device_number(device), devicebase))
+            devicenum_int = int(get_device_number(device), devicebase)
+            if devicebase == 16:
+                devicenum = format(devicenum_int, "x")
+            else:
+                devicenum = str(devicenum_int)
             if self.plctype is const.iQR_SERIES:
                 device_data += devicecode.encode()
                 device_data += devicenum.rjust(8, "0").upper().encode()
@@ -401,6 +414,8 @@ class Type3E:
         
         """
         try:
+            if not byte:
+                raise ValueError("Could not decode empty byte to value")
             if self.commtype == const.COMMTYPE_BINARY:
                 value =int.from_bytes(byte, "little", signed = isSigned)
             else:
@@ -416,8 +431,53 @@ class Type3E:
 
         """
         answerstatus_index = self._get_answerstatus_index()
-        answerstatus = self._decode_value(recv_data[answerstatus_index:answerstatus_index+self._wordsize], "short")
-        mcprotocolerror.check_mcprotocol_error(answerstatus)
+        min_length = answerstatus_index + self._wordsize
+        if not recv_data or len(recv_data) < min_length:
+            raise mcprotocolerror.MCProtocolResponseError(
+                "Response data is too short: expected at least {} bytes, got {} bytes".format(
+                    min_length, 0 if not recv_data else len(recv_data)
+                )
+            )
+        answerstatus = self._decode_value(recv_data[answerstatus_index:min_length], "short")
+        if answerstatus != 0:
+            byte_size = self._wordsize // 2
+            word_size = self._wordsize
+            err_index = self._get_answerdata_index()
+            network = None
+            pc = None
+            module_io = None
+            station = None
+            command = None
+            subcommand = None
+            try:
+                if len(recv_data) >= err_index + byte_size:
+                    network = self._decode_value(recv_data[err_index:err_index + byte_size], "byte")
+                err_index += byte_size
+                if len(recv_data) >= err_index + byte_size:
+                    pc = self._decode_value(recv_data[err_index:err_index + byte_size], "byte")
+                err_index += byte_size
+                if len(recv_data) >= err_index + word_size:
+                    module_io = self._decode_value(recv_data[err_index:err_index + word_size], "short")
+                err_index += word_size
+                if len(recv_data) >= err_index + byte_size:
+                    station = self._decode_value(recv_data[err_index:err_index + byte_size], "byte")
+                err_index += byte_size
+                if len(recv_data) >= err_index + word_size:
+                    command = self._decode_value(recv_data[err_index:err_index + word_size], "short")
+                err_index += word_size
+                if len(recv_data) >= err_index + word_size:
+                    subcommand = self._decode_value(recv_data[err_index:err_index + word_size], "short")
+            except ValueError:
+                pass
+            mcprotocolerror.check_mcprotocol_error(
+                answerstatus,
+                network=network,
+                pc=pc,
+                module_io=module_io,
+                station=station,
+                command=command,
+                subcommand=subcommand,
+            )
         return None
 
     def batchread_wordunits(self, headdevice, readsize):
