@@ -55,7 +55,7 @@ class UnsupportedComandError(Exception):
 
     """
     def __init__(self):
-        pass
+        super().__init__(self.__str__())
 
     def __str__(self):
         return "This command is not supported by the module you connected." \

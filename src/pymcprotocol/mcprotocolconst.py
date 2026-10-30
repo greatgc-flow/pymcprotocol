@@ -12,16 +12,17 @@ COMMTYPE_BINARY = "binary"
 COMMTYPE_ASCII  = "ascii"
 
 class DeviceCodeError(Exception):
-    """devicecode error. Device is not exsist.
+    """devicecode error. Device does not exist for the target PLC series.
 
     Attributes:
-        plctype(str):       PLC type. "Q", "L", "QnA", "iQ-L", "iQ-R", 
-        devicename(str):    devicename. (ex: "Q", "P", both of them does not support mcprotocol.)
+        plctype(str):       PLC type. "Q", "L", "QnA", "iQ-L", "iQ-R"
+        devicename(str):    devicename. (ex: "Q", "P", both of them do not support mcprotocol.)
 
     """
     def __init__(self, plctype, devicename):
         self.plctype = plctype
         self.devicename = devicename
+        super().__init__(self.__str__())
 
     def __str__(self):
         error_txt = "devicename: {} is not support {} series PLC.\n"\
@@ -161,6 +162,8 @@ class DeviceConstants:
             return DeviceConstants.LTN_DEVICE, 10
         elif (devicename == "LSTS") and (plctype == iQR_SERIES):
             return DeviceConstants.LSTS_DEVICE, 10
+        elif (devicename == "LSTC") and (plctype == iQR_SERIES):
+            return DeviceConstants.LSTC_DEVICE, 10
         elif (devicename == "LSTN") and (plctype == iQR_SERIES):
             return DeviceConstants.LSTN_DEVICE, 10
         elif (devicename == "LCS") and (plctype == iQR_SERIES):
@@ -262,6 +265,8 @@ class DeviceConstants:
             return devicename.ljust(padding, "*"), 10
         elif (devicename == "LSTS") and (plctype == iQR_SERIES):
             return devicename.ljust(padding, "*"), 10
+        elif (devicename == "LSTC") and (plctype == iQR_SERIES):
+            return devicename.ljust(padding, "*"), 10
         elif (devicename == "LSTN") and (plctype == iQR_SERIES):
             return devicename.ljust(padding, "*"), 10
         elif (devicename == "LCS") and (plctype == iQR_SERIES):
@@ -346,8 +351,10 @@ class DeviceConstants:
         elif (devicename == "LTC") and (plctype == iQR_SERIES):
             return DeviceConstants.BIT_DEVICE
         elif (devicename == "LTN") and (plctype == iQR_SERIES):
-            return DeviceConstants.BIT_DEVICE
+            return DeviceConstants.DWORD_DEVICE
         elif (devicename == "LSTS") and (plctype == iQR_SERIES):
+            return DeviceConstants.BIT_DEVICE
+        elif (devicename == "LSTC") and (plctype == iQR_SERIES):
             return DeviceConstants.BIT_DEVICE
         elif (devicename == "LSTN") and (plctype == iQR_SERIES):
             return DeviceConstants.DWORD_DEVICE
